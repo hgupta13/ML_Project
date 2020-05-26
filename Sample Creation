@@ -1,0 +1,9 @@
+We are using the data from Romero, Mauricio; Sandefur, Justin; Sandholtz, Wayne, 2018,
+"Partnership Schools for Liberia", https://doi.org/10.7910/DVN/5OPIYU, Harvard Dataverse, V4.
+
+The data was used for the paper "Outsourcing Education: Experimental Evidence from Liberia" by the same set of authors.
+
+In our project we use the publically available data provided by the authors. The entire dataset is available at the above link 
+and is also available on Google Drive.
+
+For the purposes of this project, we use the cleaned "sample.csv" file. The "sample.csv" is created using "sample_creation.R" code. 
