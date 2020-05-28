@@ -26,6 +26,11 @@ Student_endline <- read_dta("~/PSL Endline Dataverse Files/Analysis/usedata_publ
 #school characterisitcs
 school <-  read_dta("~/PSL Endline Dataverse Files/Analysis/usedata_public/SchoolControls.dta")
 
+#Funding data
+
+funding <-read_dta("~/PSL Endline Dataverse Files/Analysis/usedata_public/baseline/FundingWide.dta")
+
+
 #We select the relevant student and school controls
 # The controls are the ones described in Table A.5 of the online appendix of the paper
 
@@ -52,6 +57,20 @@ sample = inner_join(Student_baseline,outcomes,
                     by=c("uniqueid_nopii", "schoolid_nopii","groupid_nopii"))
 
 sample = left_join(sample,school, by = c("schoolid_nopii","groupid_nopii"))
+sample = left_join(sample,funding)
+
+#Only examine schools that were actually treated
+sample = sample %>% filter(treatment.x ==turnedpsl)
+
+#Select relevant covariates. See overleaf for details
+sample = sample %>% select(uniqueid_nopii,schoolid_nopii,groupid_nopii, #Identifiers
+                           age, gender, grade_2015,IndexAssets, #Student Characteristics
+                           Average2015, FacilitiesIndex, Rural, TimeToBank, nTb_a_1, #school characterisitcs
+                           turnedpsl,IRT_Composite)
+
+colnames(sample) = c("studentid","schoolid","groupid","age","gender","grade","student_wealth",
+                     "enrollment_2015","school_facilities","rural","time_to_bank", "NGO_donations"
+                     ,"W","IRT_score")
 
 
 write.csv(sample, "sample.csv")
