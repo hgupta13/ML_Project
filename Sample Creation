@@ -59,14 +59,12 @@ sample = inner_join(Student_baseline,outcomes,
 sample = left_join(sample,school, by = c("schoolid_nopii","groupid_nopii"))
 sample = left_join(sample,funding)
 
-#Only examine schools that were actually treated
-sample = sample %>% filter(treatment.x ==turnedpsl)
 
 #Select relevant covariates. See overleaf for details
 sample = sample %>% select(uniqueid_nopii,schoolid_nopii,groupid_nopii, #Identifiers
                            age, gender, grade_2015,IndexAssets, #Student Characteristics
                            Average2015, FacilitiesIndex, Rural, TimeToBank, nTb_a_1, #school characterisitcs
-                           turnedpsl,IRT_Composite)
+                           treatment.x,IRT_Composite)
 
 colnames(sample) = c("studentid","schoolid","groupid","age","gender","grade","student_wealth",
                      "enrollment_2015","school_facilities","rural","time_to_bank", "NGO_donations"
