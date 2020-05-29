@@ -2,6 +2,7 @@
 # Date: 2020.05.29
 # Course: ECON 293 - ML
 # Project: Final Project
+# Description: Estimate ITT ATEs
 ################################################
 
   rm(list = ls())
@@ -153,6 +154,7 @@
     labs(x = 'Propensity Score',
          y = 'Density',
          title = 'Logit Propensity Scores')
+  ggsave(filename = 'Output/Propensity Histogram.png', device = 'png')
   
   # 2 - Table of ITT Estimates
   itt_table <- bind_rows(itt_unweighted,
