@@ -1,0 +1,359 @@
+---
+title: "Description of Analysis"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r pkgs, include = FALSE}
+  rm(list = ls())
+  options(scipen=999)
+  
+############################
+# LOAD PACKAGES
+############################
+  library(tidyr)
+  library(dplyr)
+  library(stringr)
+  library(readr)
+  library(ggplot2)
+  library(rmarkdown)
+  library(kableExtra)
+  library(utils)
+  library(readxl)
+  library(randomForest)
+  library(glmnet)
+  library(clubSandwich)
+  library(sandwich)
+
+```
+
+\section{Replication of ITT Effects}
+
+The following code supports the ITT estimation in our report. We implement three methods for estimating average treatment effects:
+* First, we estimate direct conditional ATEs for the assigned treatment group. The authors of the study we are replicating designed treatment assignment to be unconfounded, so we might expect that direct ATE estimates are a reasonable estimate of the underlying treatment effect. The estimated treatment effect is the average of $\tau(X)$, where $$\tau(X) = E[Y_i(1) - Y_i(0) | X_i = x]$$
+* Second, we estiamte a weighted average treatment effect using propensity weights. In a non-randomized study, we might be concerned that treatment is correlated with certain features $X$. In our context, we know that assignment balanced school-level characteristics but we might be worried that student-level characteristics in particular are unbalanced in the treatment versus control groups. If unconfoudnedness holds, then it should be the case that $$Y_i(1),Y_i(0) \perp W_i | e(X_i)$$
+We use inverse propensity weighting to balance the influence of treated and control observations for a given set of features $X_i$, then calculate a weighted average treatment effect. Our results confirm randomization - there is substantial overlap between the propensity scores of treated and control individuals, so the IPW estimated ATE ends up close to the unweighted ATE.
+* Third, we calculate an augmented inverse-propensity weighted ATE. The AIPW estimator combines elements of conditional means and inverse propensity weighting to correct for possible bias due to misspecification. The estimated treatment effect for the AIPW estimator is
+$$\tau=\mathbb{E}\left[W_{i} \frac{Y_{i}-\tau\left(1, X_{i}\right)}{e\left(X_{i}\right)}+\left(1-W_{i}\right) \frac{Y_{i}-\tau\left(0, X_{i}\right)}{\left(1-e\left(X_{i}\right)\right)}+\tau\left(1, X_{i}\right)-\tau\left(0, X_{i}\right)\right] $$
+Confirming our intiuition, the AIPW estimator is reasonably close to the IPW and unweighted ATE.
+
+```{r ate}
+############################
+# LOAD DATA
+############################
+  df <- read_csv('sample.csv') %>%
+    select(-X1) %>%
+    mutate(gender = gender - 1) %>%
+    filter(!is.na(NGO_donations),
+           !is.na(student_wealth))
+  itt_out <- list()
+  
+############################
+# REPLICATE TABLE 3 OF ROMERO ET AL.
+############################
+  reg_fun <- paste0('IRT_score ~ ', 
+                    # Group fixed effect
+                    'factor(groupid) + ',
+                    # Treatment
+                    'W + ',
+                    # Student fixed characteristics
+                    paste('age', 'gender', 'student_wealth', 'factor(grade)', sep = ' + '),
+                    ' + ',
+                    # School fixed characteristics
+                    paste('school_facilities', 'time_to_bank', 'enrollment_2015', 'rural', 'NGO_donations', sep = ' + '))
+
+  
+############################
+# Calculate ITT OLS, cluster standard errors at school level
+############################
+  lm_out <- lm(reg_fun, data = df) 
+  itt_unweighted <- coef_test(lm_out, vcov = "CR1", 
+                              cluster = df$schoolid, test = "naive-t")['W', ] 
+  itt_unweighted <- tibble(type = 'unweighted',
+                    estimate = itt_unweighted$beta,
+                    se = itt_unweighted$SE,
+                    ci_low = itt_unweighted$beta - 1.96 * itt_unweighted$SE,
+                    ci_high = itt_unweighted$beta + 1.96 * itt_unweighted$SE)
+  
+############################
+# 2 - IPW Estimator
+############################
+  W <- as.matrix(df %>% select(W))
+  
+    # Manually create indicator variables for X$grade
+    grs <- matrix(nrow = nrow(W), ncol = length(unique(df$grade)), 0L)
+    grades <- unique(df$grade)
+    for(i in 1:length(grades)) {
+      grs[ , i] <- as.numeric(grades[[i]] == df$grade)
+    }
+    X <- cbind(grs,
+               as.matrix(df %>% 
+                           select(school_facilities, time_to_bank, enrollment_2015, 
+                                  rural, NGO_donations, gender, age, student_wealth)))
+  # Estimate propensity weights
+  p <- glm(W ~ X, family = "binomial") %>%
+      predict(type = 'response')
+  
+  # Append propensity weights to df
+  df_ipw <- df %>%
+    # Calculate propensity weights
+    mutate(weight = (W / p) + ((1 - W) / (1 - p)))
+  
+  # Estimate IPW regression
+  lm_out <- lm(reg_fun, data = df_ipw, weights = weight)
+  itt_ipw <- coef_test(lm_out, vcov = "CR1", 
+                              cluster = df_ipw$schoolid, test = "naive-t")['W', ]
+  itt_ipw <- tibble(type = 'IPW',
+                    estimate = itt_ipw$beta,
+                    se = itt_ipw$SE,
+                    ci_low = itt_ipw$beta - 1.96 * itt_ipw$SE,
+                    ci_high = itt_ipw$beta + 1.96 * itt_ipw$SE)
+  
+############################
+# 3 - Double robust estimator
+############################
+  aipw_fun <- paste0('IRT_score ~ ', 
+                    # Group fixed effect
+                    'factor(groupid) + ',
+                    # School fixed characteristics
+                    paste('school_facilities', 'time_to_bank', 'enrollment_2015', 'rural', 'NGO_donations', sep = ' + '),
+                    # Interaction
+                    ' + W * (',
+                    # Student fixed characteristics
+                    paste('age', 'gender', 'student_wealth', 'factor(grade)', sep = ' + '),
+                    ')')
+  lm_out <- lm(aipw_fun, data = df)   
+    
+    # Predict - all treated
+    df_treatall <- df %>% 
+      mutate(W = 1)
+    y_treatall <- predict(lm_out, df_treatall)
+    
+    # Predict - all control
+    df_treatnone <- df %>% 
+      mutate(W = 0)
+    y_treatnone <- predict(lm_out, df_treatnone)
+    
+    # Predict actual
+    actual_pred = predict(lm_out, df)
+    
+    # Calculate AIPW estimate
+    G <- y_treatall - y_treatnone +
+      ((df$W - p) * (df$IRT_score - actual_pred)) / (p * (1 - p))
+    tau.hat <- mean(G)
+    se.hat <- sqrt(var(G) / (length(G) - 1))
+    
+    # Format output
+    itt_aipw <- tibble(type = 'aipw',
+                         estimate = tau.hat,
+                         se = se.hat,
+                         ci_low = tau.hat - 1.96 * se.hat,
+                         ci_high = tau.hat + 1.96 * se.hat)
+
+    
+############################
+# FORMAT OUTPUT - ITT
+############################
+  # 1 - Propensity score overlap
+  plot_tib <- tibble(treatment = factor(W), score = p)
+  ggplot(plot_tib) +
+      geom_histogram(aes(x = score, y = stat(density), fill = treatment),
+                     alpha = 0.3, position = 'identity') +
+    labs(x = 'Propensity Score',
+         y = 'Density',
+         title = 'Logit Propensity Scores')
+  ggsave(filename = 'Output/Propensity Histogram.png', device = 'png')
+  
+  # 2 - Table of ITT Estimates
+  itt_table <- bind_rows(itt_unweighted,
+                         itt_ipw,
+                         itt_aipw)
+  kable(itt_table, digits = 3, format = 'latex')
+
+
+  
+```
+
+\section{Heterogeneous Treatment Effects}
+
+We are interested in using machine learning methods to estimate treatment effects in the PSL setting. Machine learning methods enable more flexible estimation of treatment effects, where the non-parametric flexibility allows the models to identify effects that might not have been captured under assumptions driving the previous analysis. We implement the following four methods to estimate treatment effects in the PSL setting:
+
+* **S-Learner**: Estimate $Y(0)$, $Y(1)$ with a single model. In this application, I learn a single model $\hat{\mu}(z)$ using a single random forest that predicts $Y_i$ from $Z_i = (X_i, W_i)$, then estimates the treatment effect for some feature vector $\hat{\tau}(x) = \hat{\mu}(x,1)-\hat{\mu}(x,0)$. In general, S-learners work well when groups are of substantially different size because the learner pools information about both groups. 
+
+* **T-Learner**: The T-learner first separate models $\hat{\mu}_{(i)}(x)$ for treated and control individual $i \in \{0,1\}$, then calculates a treatment effect as the difference $\hat{\tau}(x) = \hat{\mu}_{(1)}(x)-\hat{\mu}_{(0)}(x)$. To develop accurate models across the entire feature space, we need similarly distributions of treated and control observations across $\mathcal{X}$. The T-learner will fail if the density of treated and control observations differ substantially
+
+* **X-Learner**: The X-learner models $Y(0)$ and $Y(0)$ to estimate conditional average treatment effects on the treated and control observations. The model extracts the relationship between outcomes and features in separate forests for treated and control individuals, then uses the model to predict counterfactual outcomes $\hat{\mu}$. We then estimate treatment effects by regressing the difference of individual treatment effects on the covariates. The final estimate is a convex combination of the estimated CATE on treated and CATE on control observations, weighted by the estimated propensity score. The X-learner combines some of the benefits of the S- and T-learners: it fits models for treated and control observations but overcomes regularization bias by regressing the predicted treatment effect on the features. However, the X-learner does not learn treatment effect estimates using propensity scores, so it is still vulnerable to confounding
+
+* **Causal Forest**: Estimates average treatment effects by learning multiple causal trees (partition feature space to maximize contribution to loss function, estimate constant ATE within each leaf, then average over trees to smooth). One of the benefits of the causal forest is the incorporation of propensity weighting to address confoundedness - of particular relevance in this problem.
+
+Having laid out the benefits and disadvantages of each method above, we can predict which methods will perform well in this setting and which methods will struggle. In particular, given strong balance on observables in the treatment and control groups, we might expect that the T-learner will outperform the S- or X- learners.
+
+We split the PSL data into a training set, which contains 60\% of observations (stratified on assignment group and treatment group), and a test set, which contains 40\% of observations. We fit each of the aforementioned models to the training dataset and calculate R-loss on the test dataset. We compare R-loss for each method to R-loss estimates using a simple stratum average treatment effect. Confirming our priors, the causal forest and T-learner perform well relative to other methods.
+
+```{r hte}
+
+############################
+# SPLIT, PREPARE DATA
+############################
+  # Split into test, train samples. Stratify split by group and treatment
+  # to ensure that the test and train datasets can calculate CATEs within each
+  # randomization group
+  df_train <- df %>%
+    group_by(W, groupid) %>%
+    sample_frac(0.6) %>%
+    ungroup()
+  df_test <- df[(df$studentid %in% df_train$studentid) == FALSE, ]
+  
+  # Remove student id from data frame, recast groupid as factor variable
+  df_train <- df_train %>%
+    select(-c(studentid))
+  df_test <- df_test %>%
+    select(-c(studentid))
+  
+  # Split data frame into outcome, features, treatment
+  W <- df_train$W
+  Y <- df_train$IRT_score
+  X <- df_train %>% 
+    select(-c(W, IRT_score))
+  
+  # Repeat for test set
+  W_test <- df_test$W
+  Y_test <- df_test$IRT_score
+  X_test <- df_test %>% 
+    select(-c(W, IRT_score))
+
+############################
+# S LEARNER
+############################      
+  # 1 - Calculate S-Learner (see slide 22 of Lecture 4)
+  s_learn <- regression_forest(cbind(W, X), Y)
+  pred_s_0 <- predict(s_learn, cbind(0, X))$predictions
+  pred_s_1 <- predict(s_learn, cbind(1, X))$predictions
+  pred_s_oob <- predict(s_learn)$predictions
+  pred_s_0[W == 0] <- pred_s_oob[W == 0] 
+  pred_s_1[W == 1] <- pred_s_oob[W == 1]
+  pred_s <- pred_s_1 - pred_s_0 
+  
+  # Predict on test data
+  tauhat_s <- predict(s_learn, cbind(1, X_test))$predictions - 
+    predict(s_learn, cbind(0, X_test))$predictions
+  
+############################
+# T LEARNER
+############################   
+  # 2 - Calculate T-Learner (see slide 21 of Lecutre 4)
+  tf0 <- regression_forest(X[W==0,], Y[W==0])
+  tf1 <- regression_forest(X[W==1,], Y[W==1])
+  tf.preds.0 <- predict(tf0, X)$predictions
+  tf.preds.1 <- predict(tf1, X)$predictions
+  tf.preds.0[W==0] <- predict(tf0)$predictions #OOB
+  tf.preds.1[W==1] <- predict(tf1)$predictions #OOB
+  pred_t <- tf.preds.1 - tf.preds.0
+  
+  # Predict on test data
+  tauhat_t <- predict(tf1, X_test)$predictions - 
+    predict(tf0, X_test)$predictions
+  
+############################
+# X LEARNER
+############################ 
+  # A - Predict Y_i from X_i when W_i == 0 (use T-learner forest 0),
+  # Learn \tau_1 by predicting delta from X_i when W_i == 1
+  yhat0 = predict(tf0, X[W==1,])$predictions
+  xf1 = regression_forest(X[W==1,], Y[W==1]-yhat0)
+  xf.preds.1 = predict(xf1, X)$predictions
+  xf.preds.1[W==1] = predict(xf1)$predictions
+  
+  # B - Swap: Predict Y_i from X_i when W_i == 1 (use T-learner forest 1),
+  # Learn \tau_0
+  yhat1 = predict(tf1, X[W==0,])$predictions
+  xf0 = regression_forest(X[W==0,], yhat1-Y[W==0])
+  xf.preds.0 = predict(xf0, X)$predictions
+  xf.preds.0[W==0] = predict(xf0)$predictions
+  
+  # C - Estimate the propensity score - regression forest
+  # of W on X
+  propf = regression_forest(X, W)  # , tune.parameters = TRUE)
+  ehat = predict(propf)$predictions
+  
+  # D - Estimate \hat{\tau}(x)
+  pred_x = (1 - ehat) * xf.preds.1 + ehat * xf.preds.0
+  
+  # E - Predict
+  ehat.test <- predict(propf, X_test)$predictions
+  xf.preds.1.test <- predict(xf1, X_test)$predictions
+  xf.preds.0.test <- predict(xf0, X_test)$predictions
+  tauhat_xl_test <- (1 - ehat.test) * xf.preds.1.test + ehat.test * xf.preds.0.test
+  
+############################
+# CAUSAL FOREST
+############################ 
+  cf <- causal_forest(X, Y, W, num.trees = dim(X)[1])
+  pred_cf <- predict(cf)$predictions
+  tauhat_cf <- predict(cf, newdata = X_test)$predictions
+  
+############################
+# WITHIN-GROUP ATE
+############################
+  # Estimate ATE within each matched pair of schools
+  group_ate <- df_train %>%
+    # Collapse to pair-treatment group level
+    group_by(groupid, W) %>%
+    mutate(avg_score = mean(IRT_score),
+           sq_error = (avg_score - IRT_score) ^ 2) %>%
+    summarize(avg_score = mean(avg_score),
+              count = n(),
+              sum_error = sum(sq_error)) %>%
+    ungroup() %>%
+    # Collapse to pair level to estimate pair treatment effect, error
+    mutate(avg_score = if_else(W == 0, -1 * avg_score, avg_score),
+           st_err = sum_error / (count - 1)) %>%
+    group_by(groupid) %>%
+    summarize(treatment_effect = sum(avg_score),
+              st_err = sum(st_err),
+              count = sum(count)) %>%
+    ungroup() %>%
+    mutate(st_err = sqrt(st_err))
+  
+  # Map into test dataset
+  tauhat_group_ate <- df_test %>% 
+    inner_join(group_ate) %>%
+    select(treatment_effect) %>%
+    c() %>%
+    unlist()
+
+############################
+# R Loss
+############################
+  # Estimate Y_hat, W_hat on test set
+  Y.forest.test = regression_forest(X = as.matrix(X_test), Y = Y_test)
+  Y.hat.test = predict(Y.forest.test)$predictions
+  W.forest.test = regression_forest(X = as.matrix(X_test), Y = W_test)
+  W.hat.test = predict(W.forest.test)$predictions
+  
+  # Calculate sq error loss
+  sq_error_loss <- tibble(
+    ate = (Y_test - Y.hat.test - (W_test - W.hat.test) * tauhat_group_ate) ^ 2,
+    s_learner = (Y_test - Y.hat.test - (W_test - W.hat.test) * tauhat_s) ^ 2,
+    t_learner = (Y_test - Y.hat.test - (W_test - W.hat.test) * tauhat_t) ^ 2,
+    causal_forest = (Y_test - Y.hat.test - (W_test - W.hat.test) * tauhat_cf) ^ 2,
+    x_learner = (Y_test - Y.hat.test - (W_test - W.hat.test) * tauhat_xl_test) ^ 2
+    )
+  
+  # Calculate mean square error, standard error
+  sq_error_loss <- melt(sq_error_loss) %>%
+    group_by(variable) %>%
+    mutate(mean_val = mean(value),
+           se = (value - mean_val) ^ 2) %>%
+    summarize(mean_val = mean(mean_val),
+              count = n(),
+              mse = sum(se)) %>%
+    mutate(se = sqrt(mse / (count - 1))) %>%
+    select(variable, mean_val, se)
+
+
+```
+

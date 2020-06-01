@@ -155,7 +155,7 @@
   itt_table <- bind_rows(itt_unweighted,
                          itt_ipw,
                          itt_aipw)
-  kable(itt_table, digits = 3)
+  kable(itt_table, digits = 3, format = 'latex')
 
 
   

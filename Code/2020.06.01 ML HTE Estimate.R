@@ -137,7 +137,7 @@
 # WITHIN-GROUP ATE
 ############################
   # Estimate ATE within each matched pair of schools
-  group_ate <- df %>%
+  group_ate <- df_train %>%
     # Collapse to pair-treatment group level
     group_by(groupid, W) %>%
     mutate(avg_score = mean(IRT_score),
