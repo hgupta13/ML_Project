@@ -179,6 +179,16 @@
     t_learner = (Y_test - Y.hat.test - (W_test - W.hat.test) * tauhat_t) ^ 2,
     causal_forest = (Y_test - Y.hat.test - (W_test - W.hat.test) * tauhat_cf) ^ 2,
     x_learner = (Y_test - Y.hat.test - (W_test - W.hat.test) * tauhat_xl_test) ^ 2
-    ) %>%
-    summarize_all(sum)
+    )
+  
+  # Calculate mean square error, standard error
+  sq_error_loss <- melt(sq_error_loss) %>%
+    group_by(variable) %>%
+    mutate(mean_val = mean(value),
+           se = (value - mean_val) ^ 2) %>%
+    summarize(mean_val = mean(mean_val),
+              count = n(),
+              mse = sum(se)) %>%
+    mutate(se = sqrt(mse / (count - 1))) %>%
+    select(variable, mean_val, se)
   
