@@ -11,9 +11,14 @@ knitr::opts_chunk$set(echo = TRUE)
   rm(list = ls())
   options(scipen=999)
   
+  
 ############################
-# LOAD PACKAGES
+# INSTALL AND LOAD PACKAGES
 ############################
+  install.packages(c('knitr', 'dplyr', 'stringr', 'readr', 'ggplot2', 'rmarkdown', 'kableExtra', 'utils', 'readxl', 'randomForest', 'glmnet', 'clubSandwich', 'sandwich', 'devtools', 'grf', 'reshape2', 'estimatr', 'car', 'aod'))
+  library(grf) #regression_forest
+  library(devtools)
+  install_github("susanathey/causalTree")
   library(tidyr)
   library(dplyr)
   library(stringr)
@@ -27,6 +32,10 @@ knitr::opts_chunk$set(echo = TRUE)
   library(glmnet)
   library(clubSandwich)
   library(sandwich)
+  library(reshape2) #melt
+  library(estimatr) #lm_robust
+  library(car) #linearHypohtesis
+  library(aod) #wald.test
 
 ```
 
@@ -44,7 +53,7 @@ Confirming our intiuition, the AIPW estimator is reasonably close to the IPW and
 ############################
 # LOAD DATA
 ############################
-  df <- read_csv('sample.csv') %>%
+  df <- read_csv('../sample.csv') %>%
     select(-X1) %>%
     mutate(gender = gender - 1) %>%
     filter(!is.na(NGO_donations),
@@ -165,7 +174,7 @@ Confirming our intiuition, the AIPW estimator is reasonably close to the IPW and
     labs(x = 'Propensity Score',
          y = 'Density',
          title = 'Logit Propensity Scores')
-  ggsave(filename = 'Output/Propensity Histogram.png', device = 'png')
+  ggsave(filename = '../Output/Propensity Histogram.png', device = 'png')
   
   # 2 - Table of ITT Estimates
   itt_table <- bind_rows(itt_unweighted,
@@ -193,7 +202,7 @@ Having laid out the benefits and disadvantages of each method above, we can pred
 
 We split the PSL data into a training set, which contains 60\% of observations (stratified on assignment group and treatment group), and a test set, which contains 40\% of observations. We fit each of the aforementioned models to the training dataset and calculate R-loss on the test dataset. We compare R-loss for each method to R-loss estimates using a simple stratum average treatment effect. Confirming our priors, the causal forest and T-learner perform well relative to other methods.
 
-```{r hte}
+```{r hte results='asis'}
 
 ############################
 # SPLIT, PREPARE DATA
@@ -291,10 +300,13 @@ We split the PSL data into a training set, which contains 60\% of observations (
 ############################
 # CAUSAL FOREST
 ############################ 
-  cf <- causal_forest(X, Y, W, num.trees = dim(X)[1])
-  pred_cf <- predict(cf)$predictions
-  tauhat_cf <- predict(cf, newdata = X_test)$predictions
-  
+  cf <- causal_forest(X, Y, W, num.trees = 200)
+  #out of bag prediction
+  oob_pred <- predict(cf, estimate.variance=TRUE)
+  oob_tauhat_cf <- oob_pred$predictions
+  #test set predictions
+  tauhat_cf_test <- predict(cf, newdata = X_test)$predictions
+
 ############################
 # WITHIN-GROUP ATE
 ############################
@@ -339,7 +351,7 @@ We split the PSL data into a training set, which contains 60\% of observations (
     ate = (Y_test - Y.hat.test - (W_test - W.hat.test) * tauhat_group_ate) ^ 2,
     s_learner = (Y_test - Y.hat.test - (W_test - W.hat.test) * tauhat_s) ^ 2,
     t_learner = (Y_test - Y.hat.test - (W_test - W.hat.test) * tauhat_t) ^ 2,
-    causal_forest = (Y_test - Y.hat.test - (W_test - W.hat.test) * tauhat_cf) ^ 2,
+    causal_forest = (Y_test - Y.hat.test - (W_test - W.hat.test) * tauhat_cf_test) ^ 2,
     x_learner = (Y_test - Y.hat.test - (W_test - W.hat.test) * tauhat_xl_test) ^ 2
     )
   
@@ -354,6 +366,45 @@ We split the PSL data into a training set, which contains 60\% of observations (
     mutate(se = sqrt(mse / (count - 1))) %>%
     select(variable, mean_val, se)
 
-
+  print(xtable(sq_error_loss, digits = 3))
 ```
 
+##How well do we match the heterogeneity in Romero et al. (2020)?
+```{r}
+hist(tauhat_cf_test, main="Causal forests: test set CATE")
+```
+
+##ATE Heterogeneity by deciles
+```{r}
+num_tiles <- 10  # ntiles = CATE is above / below the median
+df_train$cate <- oob_tauhat_cf
+df_train$ntile <- factor(ntile(oob_tauhat_cf, n=num_tiles))
+
+ols_sample_ate <- lm_robust(Y ~ ntile + ntile:W, data=df_train)
+estimated_sample_ate <- coef(summary(ols_sample_ate))[(num_tiles+1):(2*num_tiles), c("Estimate", "Std. Error")]
+print(estimated_sample_ate)
+hypothesis_sample_ate <- paste0("ntile1:W = ", paste0("ntile", seq(2, num_tiles), ":W"))
+ftest_pvalue_sample_ate <- linearHypothesis(ols_sample_ate, hypothesis_sample_ate)[2,"Pr(>F)"]
+
+estimated_aipw_ate <- lapply(
+  seq(num_tiles), function(w) {
+  ate <- average_treatment_effect(cf, subset = df_train$ntile == w)
+})
+estimated_aipw_ate <- data.frame(do.call(rbind, estimated_aipw_ate))
+print(estimated_aipw_ate)
+# Testing for equality using Wald test
+## define L matrix that allows us to test if the ATEs in ntile 2+ are equal to ntile 1
+.L <- cbind(-1, diag(num_tiles - 1))
+# e.g. [,1] [,2] [,3] [,4]
+# [1,]   -1    1    0    0
+# [2,]   -1    0    1    0
+# [3,]   -1    0    0    1
+waldtest_pvalue_aipw_ate <- wald.test(Sigma = diag(estimated_aipw_ate$std.err^2),
+                                      b = estimated_aipw_ate$estimate,
+                                      L = .L)$result$chi2[3]
+
+combined_decile_ate <- cbind(estimated_sample_ate, estimated_aipw_ate)
+print(combined_decile_ate)
+print(xtable(combined_decile_ate, digits = 3))
+```
+```{r}
