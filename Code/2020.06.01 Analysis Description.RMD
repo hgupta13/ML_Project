@@ -11,9 +11,15 @@ knitr::opts_chunk$set(echo = TRUE)
   rm(list = ls())
   options(scipen=999)
   
+  
 ############################
-# LOAD PACKAGES
+# INSTALL AND LOAD PACKAGES
 ############################
+  install.packages(c('knitr', 'dplyr', 'stringr', 'readr', 'ggplot2', 'rmarkdown', 'kableExtra', 'utils', 'readxl', 'randomForest', 'glmnet', 'clubSandwich', 'sandwich', 'devtools', 'grf', 'reshape2', 'estimatr', 'car', 'aod'))
+  install_github("susanathey/causalTree", force = TRUE)
+  library(causalTree)
+  library(grf) #regression_forest
+  library(devtools)
   library(tidyr)
   library(dplyr)
   library(stringr)
@@ -27,6 +33,10 @@ knitr::opts_chunk$set(echo = TRUE)
   library(glmnet)
   library(clubSandwich)
   library(sandwich)
+  library(reshape2) #melt
+  library(estimatr) #lm_robust
+  library(car) #linearHypohtesis
+  library(aod) #wald.test
 
 ```
 
@@ -44,13 +54,14 @@ Confirming our intiuition, the AIPW estimator is reasonably close to the IPW and
 ############################
 # LOAD DATA
 ############################
-  df <- read_csv('sample.csv') %>%
+  df <- read_csv('../sample.csv') %>%
     select(-X1) %>%
     mutate(gender = gender - 1) %>%
     filter(!is.na(NGO_donations),
            !is.na(student_wealth))
   itt_out <- list()
   
+  covariate_names <- c('age', 'gender', 'student_wealth', 'grade', 'school_facilities', 'time_to_bank', 'enrollment_2015', 'rural', 'NGO_donations')
 ############################
 # REPLICATE TABLE 3 OF ROMERO ET AL.
 ############################
@@ -165,7 +176,7 @@ Confirming our intiuition, the AIPW estimator is reasonably close to the IPW and
     labs(x = 'Propensity Score',
          y = 'Density',
          title = 'Logit Propensity Scores')
-  ggsave(filename = 'Output/Propensity Histogram.png', device = 'png')
+  ggsave(filename = '../Output/Propensity Histogram.png', device = 'png')
   
   # 2 - Table of ITT Estimates
   itt_table <- bind_rows(itt_unweighted,
@@ -193,7 +204,7 @@ Having laid out the benefits and disadvantages of each method above, we can pred
 
 We split the PSL data into a training set, which contains 60\% of observations (stratified on assignment group and treatment group), and a test set, which contains 40\% of observations. We fit each of the aforementioned models to the training dataset and calculate R-loss on the test dataset. We compare R-loss for each method to R-loss estimates using a simple stratum average treatment effect. Confirming our priors, the causal forest and T-learner perform well relative to other methods.
 
-```{r hte}
+```{r hte results='asis'}
 
 ############################
 # SPLIT, PREPARE DATA
@@ -291,10 +302,13 @@ We split the PSL data into a training set, which contains 60\% of observations (
 ############################
 # CAUSAL FOREST
 ############################ 
-  cf <- causal_forest(X, Y, W, num.trees = dim(X)[1])
-  pred_cf <- predict(cf)$predictions
-  tauhat_cf <- predict(cf, newdata = X_test)$predictions
-  
+  cf <- causal_forest(X, Y, W, num.trees = 200)
+  #out of bag prediction
+  oob_pred <- predict(cf, estimate.variance=TRUE)
+  oob_tauhat_cf <- oob_pred$predictions
+  #test set predictions
+  tauhat_cf_test <- predict(cf, newdata = X_test)$predictions
+
 ############################
 # WITHIN-GROUP ATE
 ############################
@@ -339,7 +353,7 @@ We split the PSL data into a training set, which contains 60\% of observations (
     ate = (Y_test - Y.hat.test - (W_test - W.hat.test) * tauhat_group_ate) ^ 2,
     s_learner = (Y_test - Y.hat.test - (W_test - W.hat.test) * tauhat_s) ^ 2,
     t_learner = (Y_test - Y.hat.test - (W_test - W.hat.test) * tauhat_t) ^ 2,
-    causal_forest = (Y_test - Y.hat.test - (W_test - W.hat.test) * tauhat_cf) ^ 2,
+    causal_forest = (Y_test - Y.hat.test - (W_test - W.hat.test) * tauhat_cf_test) ^ 2,
     x_learner = (Y_test - Y.hat.test - (W_test - W.hat.test) * tauhat_xl_test) ^ 2
     )
   
@@ -354,6 +368,138 @@ We split the PSL data into a training set, which contains 60\% of observations (
     mutate(se = sqrt(mse / (count - 1))) %>%
     select(variable, mean_val, se)
 
-
+  print(xtable(sq_error_loss, digits = 3))
 ```
 
+##How well do we match the heterogeneity in Romero et al. (2020)?
+```{r}
+hist(tauhat_cf_test, main="Causal forests: test set CATE")
+```
+
+##ATE Heterogeneity by deciles
+```{r}
+num_tiles <- 10  # ntiles = CATE is above / below the median
+df_train$cate <- oob_tauhat_cf
+df_train$ntile <- factor(ntile(oob_tauhat_cf, n=num_tiles))
+
+ols_sample_ate <- lm_robust(Y ~ ntile + ntile:W, data=df_train)
+estimated_sample_ate <- coef(summary(ols_sample_ate))[(num_tiles+1):(2*num_tiles), c("Estimate", "Std. Error")]
+print(estimated_sample_ate)
+hypothesis_sample_ate <- paste0("ntile1:W = ", paste0("ntile", seq(2, num_tiles), ":W"))
+ftest_pvalue_sample_ate <- linearHypothesis(ols_sample_ate, hypothesis_sample_ate)[2,"Pr(>F)"]
+
+estimated_aipw_ate <- lapply(
+  seq(num_tiles), function(w) {
+  ate <- average_treatment_effect(cf, subset = df_train$ntile == w)
+})
+estimated_aipw_ate <- data.frame(do.call(rbind, estimated_aipw_ate))
+print(estimated_aipw_ate)
+# Testing for equality using Wald test
+## define L matrix that allows us to test if the ATEs in ntile 2+ are equal to ntile 1
+.L <- cbind(-1, diag(num_tiles - 1))
+# e.g. [,1] [,2] [,3] [,4]
+# [1,]   -1    1    0    0
+# [2,]   -1    0    1    0
+# [3,]   -1    0    0    1
+waldtest_pvalue_aipw_ate <- wald.test(Sigma = diag(estimated_aipw_ate$std.err^2),
+                                      b = estimated_aipw_ate$estimate,
+                                      L = .L)$result$chi2[3]
+
+combined_decile_ate <- cbind(estimated_sample_ate, estimated_aipw_ate)
+print(combined_decile_ate)
+print(xtable(combined_decile_ate, digits = 3))
+```
+#Plot Causal Tree
+```{r}
+#STEP 1. Split the dataset
+# Diving the data 40%-40%-20% into splitting, estimation and validation samples
+split_size <- floor(nrow(df_train) * 0.5)
+split_idx <- sample(nrow(df_train), replace=FALSE, size=split_size)
+
+# Make the splits
+df_split <- df_train[split_idx,]
+df_est <- df_train[-split_idx,]
+
+#STEP 2. Fit the tree
+#use reg_fun for model
+
+ct_unpruned <- honest.causalTree(
+  formula=reg_fun,            # Define the model
+  data=df_split,              # Subset used to create tree structure
+  est_data=df_est,            # Which data set to use to estimate effects
+
+  treatment=df_split$W,       # Splitting sample treatment variable
+  est_treatment=df_est$W,     # Estimation sample treatment variable
+
+  split.Rule="CT",            # Define the splitting option
+  cv.option="TOT",            # Cross validation options
+  cp=0,                       # Complexity parameter
+
+  split.Honest=TRUE,          # Use honesty when splitting
+  cv.Honest=TRUE,             # Use honesty when performing cross-validation
+
+  minsize=15,                 # Min. number of treatment and control cases in each leaf
+  HonestSampleSize=nrow(df_est)) # Num obs used in estimation after building the tree
+
+#STEP 3. Cross-Validate
+# Table of cross-validated values by tuning parameter.
+ct_cptable <- as.data.frame(ct_unpruned$cptable)
+
+# Obtain optimal complexity parameter to prune tree.
+selected_cp <- which.min(ct_cptable$xerror)
+optim_cp_ct <- ct_cptable[selected_cp, "CP"]
+
+# Prune the tree at optimal complexity parameter.
+ct_pruned <- prune(tree=ct_unpruned, cp=optim_cp_ct)
+
+#STEP 4. predict point estimates
+tauhat_ct_est <- predict(ct_pruned, newdata=df_est)
+
+#STEP 5. Compute standard errors
+# Create a factor column 'leaf' indicating leaf assignment
+num_leaves <- length(unique(tauhat_ct_est))  # There are as many leaves as there are predictions
+df_est$leaf <- factor(tauhat_ct_est, labels = seq(num_leaves))
+
+# Run the regression
+# ols_ct <- lm_robust(IRT_score ~ 0 + leaf + W:leaf, data=df_est)
+
+# ols_ct_summary <- summary(ols_ct)
+# te_summary <- coef(ols_ct_summary)[(num_leaves+1):(2*num_leaves), c("Estimate", "Std. Error")]
+
+#STEP 6. Predict point estimates on test set
+# tauhat_ct_test <- predict(ct_pruned, newdata=df_test)
+
+
+rpart.plot(
+  x=ct_pruned,        # Pruned tree
+  type=3,             # Draw separate split labels for the left and right directions
+  fallen=TRUE,        # Position the leaf nodes at the bottom of the graph
+  leaf.round=1,       # Rounding of the corners of the leaf node boxes
+  extra=100,          # Display the percentage of observations in the node
+  branch=.1,          # Shape of the branch lines
+  box.palette="RdBu") # Palette for coloring the node
+```
+
+## Histograms of treatments by different methodologies
+```{r}
+hist(tauhat_cf_test, main="Causal forests: test set CATE")
+hist(tauhat_t, main="T-learner: test set CATE")
+hist(tauhat_s, main="S-learner: test set CATE")
+hist(tauhat_group_ate, main="Matched pairs: test set difference by group")
+```
+
+##Comparison of covariates by decile
+```{r}
+# Regress each covariate on ntile assignment to means p
+cov_table <- data.frame()
+for (covariate in covariate_names) {
+  cov_mean <- lm_robust(as.formula(paste0(covariate, ' ~ 0 + ntile')), data = df_train)
+  out <- as.data.frame(t(coef(summary(cov_mean))[,c("Estimate", "Std. Error")]))
+  rownames(out) <- c(paste(covariate, 'mean',sep='_'), paste(covariate, 'std',sep='_'))
+  cov_table <- rbind(cov_table, out)
+
+}
+
+print(cov_table)
+print(xtable(cov_table, digits = 4))
+```
