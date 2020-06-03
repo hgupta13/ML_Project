@@ -486,9 +486,12 @@ hist(tauhat_cf_test, main="Causal forests: test set CATE")
 hist(tauhat_t, main="T-learner: test set CATE")
 hist(tauhat_s, main="S-learner: test set CATE")
 hist(tauhat_group_ate, main="Matched pairs: test set difference by group")
+# computing difference in means by group
+# ATE for each group using causal forest -> histogram
+# Compare the distribution using 
 ```
 
-##Comparison of covariates by decile
+##Comparison of covariates by decile on groups (which are pairs of schools (which have many observations each))
 ```{r}
 # Regress each covariate on ntile assignment to means p
 cov_table <- data.frame()
@@ -497,9 +500,13 @@ for (covariate in covariate_names) {
   out <- as.data.frame(t(coef(summary(cov_mean))[,c("Estimate", "Std. Error")]))
   rownames(out) <- c(paste(covariate, 'mean',sep='_'), paste(covariate, 'std',sep='_'))
   cov_table <- rbind(cov_table, out)
-
 }
 
 print(cov_table)
 print(xtable(cov_table, digits = 4))
+```
+
+```{r}
+sum_stats <- df_train %>% group_by(ntile) %>% summarise_at(covariate_names, mean)
+print(xtable(sum_stats, digits = 4))
 ```
