@@ -11,9 +11,15 @@ knitr::opts_chunk$set(echo = TRUE)
   rm(list = ls())
   options(scipen=999)
   
+  
 ############################
-# LOAD PACKAGES
+# INSTALL AND LOAD PACKAGES
 ############################
+  install.packages(c('knitr', 'dplyr', 'stringr', 'readr', 'ggplot2', 'rmarkdown', 'kableExtra', 'utils', 'readxl', 'randomForest', 'glmnet', 'clubSandwich', 'sandwich', 'devtools', 'grf', 'reshape2', 'estimatr', 'car', 'aod', 'devtools'))
+  library(devtools)
+  install_github("susanathey/causalTree", force = TRUE)
+  library(causalTree)
+  library(grf) #regression_forest
   library(tidyr)
   library(dplyr)
   library(stringr)
@@ -27,8 +33,10 @@ knitr::opts_chunk$set(echo = TRUE)
   library(glmnet)
   library(clubSandwich)
   library(sandwich)
-  library(grf)
-  library(causalTree)
+  library(reshape2) #melt
+  library(estimatr) #lm_robust
+  library(car) #linearHypohtesis
+  library(aod) #wald.test
 
 ```
 
@@ -342,18 +350,18 @@ We learn each model using the entire dataset, given that we are not concerned ab
 ```{r}
 #STEP 1. Split the dataset
 # Diving the data 40%-40%-20% into splitting, estimation and validation samples
-split_size <- floor(nrow(df_train) * 0.5)
-split_idx <- sample(nrow(df_train), replace=FALSE, size=split_size)
+split_size <- floor(nrow(df) * 0.5)
+split_idx <- sample(nrow(df), replace=FALSE, size=split_size)
 
 # Make the splits
-df_split <- df_train[split_idx,]
-df_est <- df_train[-split_idx,]
+df_split <- df[split_idx,]
+df_est <- df[-split_idx,]
 
 #STEP 2. Fit the tree
 #use reg_fun for model
 
 ct_unpruned <- honest.causalTree(
-  formula=reg_fun,            # Define the model
+  formula=rf2,            # Define the model
   data=df_split,              # Subset used to create tree structure
   est_data=df_est,            # Which data set to use to estimate effects
 
@@ -367,7 +375,7 @@ ct_unpruned <- honest.causalTree(
   split.Honest=TRUE,          # Use honesty when splitting
   cv.Honest=TRUE,             # Use honesty when performing cross-validation
 
-  minsize=15,                 # Min. number of treatment and control cases in each leaf
+  minsize=10,                 # Min. number of treatment and control cases in each leaf
   HonestSampleSize=nrow(df_est)) # Num obs used in estimation after building the tree
 
 #STEP 3. Cross-Validate
@@ -411,33 +419,50 @@ rpart.plot(
 
 ## Histograms of treatments by different methodologies
 ```{r}
-hist(tauhat_cf_test, main="Causal forests: test set CATE")
-hist(tauhat_t, main="T-learner: test set CATE")
-hist(tauhat_s, main="S-learner: test set CATE")
-hist(tauhat_group_ate, main="Matched pairs: test set difference by group")
+par(mfrow=c(2,3))
+hist(ate_est$ate_cf, main="Causal Forest: Group-level average of CATE's")
+hist(ate_est$ate_t, main="T-learner: Group-level average of CATE's")
+hist(ate_est$ate_s, main="S-learner: Group-level average of CATE's")
+hist(ate_est$ate_x, main="X-leaner: Group-level Difference-in-means")
+hist(ate_est$true_ate, main="Matched pairs: Group-level Difference-in-means")
 # computing difference in means by group
 # ATE for each group using causal forest -> histogram
 # Compare the distribution using 
 ```
 
 ##Comparison of covariates by decile on groups (which are pairs of schools (which have many observations each))
-```{r}
-# Regress each covariate on ntile assignment to means p
-cov_table <- data.frame()
-for (covariate in covariate_names) {
-  cov_mean <- lm_robust(as.formula(paste0(covariate, ' ~ 0 + ntile')), data = df_train)
-  out <- as.data.frame(t(coef(summary(cov_mean))[,c("Estimate", "Std. Error")]))
-  rownames(out) <- c(paste(covariate, 'mean',sep='_'), paste(covariate, 'std',sep='_'))
-  cov_table <- rbind(cov_table, out)
-}
-
-print(cov_table)
-print(xtable(cov_table, digits = 4))
-```
 
 ```{r}
-sum_stats <- df_train %>% group_by(ntile) %>% summarise_at(covariate_names, mean)
-print(xtable(sum_stats, digits = 4))
+# set number of quantiles
+ntiles = 10
+#define covariates to get summary statistics
+covariates = c('age', 'gender', 'student_wealth', 'school_facilities', 'time_to_bank', 'enrollment_2015', 'rural')
+
+# merge 
+df_group <- ate_est %>% inner_join(df 
+                      %>% group_by(groupid) %>% summarise_at(covariates, mean))
+
+#create ranks
+df_group$t_decile = ntile(df_group$ate_t, ntiles)
+df_group$x_decile = ntile(df_group$ate_x, ntiles)
+df_group$decile = ntile(df_group$true_ate, ntiles)
+
+
+#generate summary statistics
+sum_stats_t <- df_group %>% group_by(t_decile) %>% summarise_at(covariates, mean)
+sum_stats_x <- df_group %>% group_by(x_decile) %>% summarise_at(covariates, mean)
+sum_stats_a <- df_group %>% group_by(decile) %>% summarise_at(covariates, mean)
+
+#print tables 
+print(sum_stats_t)
+print(sum_stats_x)
+print(sum_stats_a)
+
+#print tables
+xtable(sum_stats_t, digits = 3, type = 'latex')
+xtable(sum_stats_x, digits = 3, type = 'latex')
+xtable(sum_stats_a, digits = 3, type = 'latex')
+
 ```
 
 
