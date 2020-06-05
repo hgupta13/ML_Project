@@ -45,13 +45,13 @@ knitr::opts_chunk$set(echo = TRUE)
 
 The following code supports the ITT estimation in our report. We implement three methods for estimating average treatment effects:
 * First, we estimate direct conditional ATEs for the assigned treatment group. The authors of the study we are replicating designed treatment assignment to be unconfounded, so we might expect that direct ATE estimates are a reasonable estimate of the underlying treatment effect. The estimated treatment effect is the average of $\tau(X)$, where $$\tau(X) = E[Y_i(1) - Y_i(0) | X_i = x]$$
-* Second, we estiamte a weighted average treatment effect using propensity weights. In a non-randomized study, we might be concerned that treatment is correlated with certain features $X$. In our context, we know that assignment balanced school-level characteristics but we might be worried that student-level characteristics in particular are unbalanced in the treatment versus control groups. If unconfoudnedness holds, then it should be the case that $$Y_i(1),Y_i(0) \perp W_i | e(X_i)$$
+* Second, we estimate a weighted average treatment effect using propensity weights. In a non-randomized study, we might be concerned that treatment is correlated with certain features $X$. In our context, we know that assignment balanced school-level characteristics but we might be worried that student-level characteristics in particular are unbalanced in the treatment versus control groups. If unconfoudnedness holds, then it should be the case that $$Y_i(1),Y_i(0) \perp W_i | e(X_i)$$
 We use inverse propensity weighting to balance the influence of treated and control observations for a given set of features $X_i$, then calculate a weighted average treatment effect. Our results confirm randomization - there is substantial overlap between the propensity scores of treated and control individuals, so the IPW estimated ATE ends up close to the unweighted ATE.
 * Third, we calculate an augmented inverse-propensity weighted ATE. The AIPW estimator combines elements of conditional means and inverse propensity weighting to correct for possible bias due to misspecification. The estimated treatment effect for the AIPW estimator is
 $$\tau=\mathbb{E}\left[W_{i} \frac{Y_{i}-\tau\left(1, X_{i}\right)}{e\left(X_{i}\right)}+\left(1-W_{i}\right) \frac{Y_{i}-\tau\left(0, X_{i}\right)}{\left(1-e\left(X_{i}\right)\right)}+\tau\left(1, X_{i}\right)-\tau\left(0, X_{i}\right)\right] $$
-Confirming our intiuition, the AIPW estimator is reasonably close to the IPW and unweighted ATE. When we omit group fixed effects from the estimate, 
+Confirming our intuition, the AIPW estimator is reasonably close to the IPW and unweighted ATE. When we omit group fixed effects from the estimate, 
 
-```{r ate, results='asis'}
+```{r ate, results='asis', eval = FALSE, eval = FALSE}
 ############################
 # LOAD DATA
 ############################
@@ -130,7 +130,6 @@ ITT_est <- function(reg_fun) {
       mutate(weight = (W / p) + ((1 - W) / (1 - p)))
     
     # Estimate IPW regression
-    lm_robust(rf1, data = df_ipw, weights = weight, clusters = schoolid)
     lm_out <- lm(reg_fun, data = df_ipw, weights = weight)
     itt_ipw <- coef_test(lm_out, vcov = "CR1", 
                                 cluster = df_ipw$schoolid, test = "naive-t")['W', ]
@@ -236,7 +235,7 @@ Having laid out the benefits and disadvantages of each method above, we can pred
 We learn each model using the entire dataset, given that we are not concerned about out of sample predictions for this exercise (our objective is to recreate within-group average treatment effects without sharing group ids with the model).
 
 
-```{r hte, results='asis'}
+```{r hte, results='asis', eval = FALSE}
   ############################
   # PREPARE DATA
   ############################
@@ -351,8 +350,9 @@ We learn each model using the entire dataset, given that we are not concerned ab
 
 ```
 
-#Plot Causal Tree
-```{r ct_plot, results='asis'}
+## Plot Causal Tree
+
+```{r ct_plot, results='asis', eval = FALSE}
 #STEP 1. Split the dataset
 # Diving the data 40%-40%-20% into splitting, estimation and validation samples
 split_size <- floor(nrow(df) * 0.5)
@@ -423,7 +423,8 @@ rpart.plot(
 ```
 
 ## Histograms of treatments by different methodologies
-```{r}
+
+```{r hists, results='asis', eval = FALSE}
 par(mfrow=c(2,3))
 hist(ate_est$ate_cf, main="Causal Forest: Group-level average of CATE's")
 hist(ate_est$ate_t, main="T-learner: Group-level average of CATE's")
@@ -435,9 +436,9 @@ hist(ate_est$true_ate, main="Matched pairs: Group-level Difference-in-means")
 # Compare the distribution using 
 ```
 
-##Comparison of covariates by decile on groups (which are pairs of schools (which have many observations each))
+## Comparison of covariates by decile on groups (which are pairs of schools (which have many observations each))
 
-```{r}
+```{r decile_compare, results='asis', eval = FALSE}
 # set number of quantiles
 ntiles = 10
 #define covariates to get summary statistics
