@@ -15,9 +15,9 @@ knitr::opts_chunk$set(echo = TRUE)
 ############################
 # INSTALL AND LOAD PACKAGES
 ############################
-  # install.packages(c('knitr', 'dplyr', 'stringr', 'readr', 'ggplot2', 'rmarkdown', 'kableExtra', 'utils', 'readxl', 'randomForest', 'glmnet', 'clubSandwich', 'sandwich', 'devtools', 'grf', 'reshape2', 'estimatr', 'car', 'aod', 'devtools'))
+  #install.packages(c('knitr', 'dplyr', 'stringr', 'readr', 'ggplot2', 'rmarkdown', 'kableExtra', 'utils', 'readxl', 'randomForest', 'glmnet', 'clubSandwich', 'sandwich', 'devtools', 'grf', 'reshape2', 'estimatr', 'car', 'aod', 'devtools', 'install_github'), repos = "http://cran.us.r-project.org")
   library(devtools)
-  # install_github("susanathey/causalTree", force = TRUE)
+  install_github("susanathey/causalTree", force = TRUE)
   library(causalTree)
   library(grf) #regression_forest
   library(tidyr)
@@ -351,6 +351,7 @@ We learn each model using the entire dataset, given that we are not concerned ab
 ```
 
 ## Plot Causal Tree
+To visually examine heterogeneity in treatment effects, we learn and plot a causal tree. The causal tree makes each split in order to maximize the different in average treatment effect between leaves but also upwardly weighs balance in leaves. The causal tree is also regularized as to not overfit and produce a tree of too great a depth.
 
 ```{r ct_plot, results='asis', eval = FALSE}
 #STEP 1. Split the dataset
@@ -423,6 +424,7 @@ rpart.plot(
 ```
 
 ## Histograms of treatments by different methodologies
+To compare heterogeneity across our different models we plot historgrams of the group-level treatment effect distribution.
 
 ```{r hists, results='asis', eval = FALSE}
 par(mfrow=c(2,3))
@@ -437,7 +439,7 @@ hist(ate_est$true_ate, main="Matched pairs: Group-level Difference-in-means")
 ```
 
 ## Comparison of covariates by decile on groups (which are pairs of schools (which have many observations each))
-
+To analyze how covariates vary across treatment effect deciles we form tables for the covariate values across treatment effect deciles.
 ```{r decile_compare, results='asis', eval = FALSE}
 # set number of quantiles
 ntiles = 10
